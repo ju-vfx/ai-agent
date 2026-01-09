@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+import sys
 
 from prompts import system_prompt
 from functions.get_files_info import schema_get_files_info, get_files_info
@@ -68,40 +69,55 @@ def call_function(function_call, verbose=False):
 def main():
     client = genai.Client(api_key=api_key)
     messages = [types.Content(role="user", parts=[types.Part(text=args.user_prompt)])]
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=messages,
-        config=types.GenerateContentConfig(system_instruction=system_prompt, tools=[available_functions]),
-    )
-    if response.usage_metadata == None:
-        raise RuntimeError("Could not get response from Gemini API.")
-    prompt_tokens = response.usage_metadata.prompt_token_count
-    reponse_tokens = response.usage_metadata.candidates_token_count
+    prompt_tokens = 0
+    reponse_tokens = 0
+    for _ in range(20):
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=messages,
+            config=types.GenerateContentConfig(system_instruction=system_prompt, tools=[available_functions]),
+        )
+        if response.usage_metadata == None:
+            raise RuntimeError("Could not get response from Gemini API.")
+        
+        if response.candidates:
+            for candidate in response.candidates:
+                messages.append(candidate.content)
+
+        prompt_tokens += response.usage_metadata.prompt_token_count
+        reponse_tokens += response.usage_metadata.candidates_token_count
+
+
+        if response.function_calls:
+            function_results = []
+            for function_call in response.function_calls:
+                #print(f"Calling function: {function_call.name}({function_call.args})")
+                function_call_result = call_function(function_call)
+                if len(function_call_result.parts) < 1:
+                    raise Exception("Function call result has no parts.")
+                if function_call_result.parts[0].function_response == None:
+                    raise Exception("Function call result has no function response.")
+                if function_call_result.parts[0].function_response.response == None:
+                    raise Exception("Function call result has no function response data.")
+                function_results.append(function_call_result.parts[0])
+                if args.verbose:
+                    print(f"-> {function_call_result.parts[0].function_response.response}")  
+            messages.append(types.Content(role="user", parts=function_results))
+        else:
+            break
+
+    else:
+        print("Warning: Reached maximum number of iterations with no result.")
+        sys.exit(1)
+        
 
     if args.verbose:
         print(f"User prompt: {args.user_prompt}")
         print(f"Prompt tokens: {prompt_tokens}")
         print(f"Response tokens: {reponse_tokens}")
         print("\n")
-
-    if response.function_calls:
-        function_results = []
-        for function_call in response.function_calls:
-            #print(f"Calling function: {function_call.name}({function_call.args})")
-            function_call_result = call_function(function_call)
-            if len(function_call_result.parts) < 1:
-                raise Exception("Function call result has no parts.")
-            if function_call_result.parts[0].function_response == None:
-                raise Exception("Function call result has no function response.")
-            if function_call_result.parts[0].function_response.response == None:
-                raise Exception("Function call result has no function response data.")
-            function_results.append(function_call_result.parts[0])
-            if args.verbose:
-                print(f"-> {function_call_result.parts[0].function_response.response}")
-        
-
-    else:
-        print(response.text)
+    
+    print(response.text)
 
 if __name__ == "__main__":
     main()
